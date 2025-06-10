@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drawing Animation Game</title>
+    <!-- Tailwind CSSを読み込む -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- gif.jsライブラリを読み込む -->
+    <script src="https://unpkg.com/gif.js@0.2.0/dist/gif.js"></script>
+    <style>
+        /* グローバルなフォント設定 */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f0f4f8; /* 薄い背景色 */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden; /* スクロールバーを非表示にする */
+        }
+
+        /* キャンバスの基本的なスタイル */
+        canvas {
+            background-color: #ffffff; /* 白いキャンバス背景 */
+            border: 2px solid #cbd5e1; /* グレーの境界線 */
+            border-radius: 1rem; /* 丸い角 */
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); /* 影 */
+            cursor: crosshair; /* 描画時のカーソル */
+            display: block;
+            touch-action: none; /* タッチイベントのデフォルト動作を無効にする */
+        }
+
+        /* ボタンのスタイル */
+        .btn {
+            @apply px-4 py-2 rounded-lg font-semibold shadow-md transition-all duration-200;
+        }
+
+        .btn-primary {
+            @apply bg-blue-500 text-white hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75;
+        }
+
+        .btn-danger {
+            @apply bg-red-500 text-white hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-75;
+        }
+
+        .color-picker-label {
+            @apply text-gray-700 font-medium;
+        }
+
+        .color-input {
+            @apply w-10 h-10 rounded-full border-2 border-gray-300 cursor-pointer;
+        }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen p-4">
+    <div class="bg-white p-6 rounded-2xl shadow-xl max-w-4xl w-full flex flex-col md:flex-row gap-6">
+        <!-- コントロールパネル -->
+        <div class="flex flex-col items-center p-4 bg-gray-50 rounded-xl shadow-inner md:w-1/4">
+            <h1 class="text-3xl font-extrabold text-gray-800 mb-6">Drawing Animation</h1>
+
+            <div class="mb-4">
+                <label for="colorPicker" class="color-picker-label block mb-2">Select Drawing Color:</label>
+                <input type="color" id="colorPicker" value="#000000" class="color-input">
+            </div>
+
+            <button id="clearButton" class="btn btn-danger w-full mb-3">
+                Clear Canvas
+            </button>
+            <button id="startButton" class="btn btn-primary w-full mb-3">
+                Start Animation
+            </button>
+            <button id="stopButton" class="btn btn-primary w-full mb-3">
+                Stop Animation
+            </button>
+            <!-- GIF保存ボタンを追加 -->
+            <button id="saveGifButton" class="btn btn-primary w-full mb-3">
+                Save as GIF
+            </button>
+            <!-- 画像読み込みボタンとinputを追加 -->
+            <input type="file" id="imageInput" accept="image/*" class="hidden">
+            <button id="loadImageButton" class="btn btn-primary w-full">
+                Load Image
+            </button>
+        </div>
+
+        <!-- キャンバスコンテナ -->
+        <div class="flex-grow flex justify-center items-center md:w-3/4">
+            <canvas id="drawingCanvas" width="800" height="600"></canvas>
+        </div>
+    </div>
+
+    <script>
+        let animationFrameId = null; // アニメーションフレームのID
+        let isDrawing = false; // 描画中かどうかを示すフラグ
+
+        // 描かれた各オブジェクトを保持する配列
+        // 各オブジェクトは `type: 'drawing'` または `type: 'image'` を持つ
+        let drawnObjects = [];
+
+        // 現在描画中の絵を一時的に保持するためのオフスクリーンCanvasとContext
+        let drawingBufferCanvas = null;
+        let drawingBufferCtx = null;
+
+        const minScale = 0.8;   // 最小拡大率
+        const maxScale = 1.2;   // 最大拡大率
+        const wiggleAmount = 0.8; // 移動に加えるランダムな揺れの量
+
+        // GIFキャプチャ関連のグローバル変数
+        let gif = null;
+        let isCapturingGif = false;
+        let capturedFrames = 0;
+        const MAX_GIF_FRAMES = 100; // GIFに含めるフレーム数（約5秒分: 100フレーム / 20fps）
+        const GIF_FRAME_DELAY = 50; // 各フレーム間の遅延（ms）。50ms = 20fps
+
+        // 画像データの透明でない部分の境界ボックスを検出する関数
+        function getBoundingBox(imageData) {
+            const data = imageData.data;
+            const width = imageData.width;
+            const height = imageData.height;
+
+            let minX = width;
+            let minY = height;
+            let maxX = 0;
+            let maxY = 0;
+            let foundPixel = false;
+
+            // ピクセルデータを走査して、透明でないピクセルを見つける
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const alpha = data[(y * width + x) * 4 + 3]; // アルファチャンネル（透明度）
+                    if (alpha > 0) { // ピクセルが完全に透明でなければ
+                        minX = Math.min(minX, x);
+                        minY = Math.min(minY, y);
+                        maxX = Math.max(maxX, x);
+                        maxY = Math.max(maxY, y);
+                        foundPixel = true;
+                    }
+                }
+            }
+
+            // 透明なピクセルしかなかった場合（何も描かれていない場合）
+            if (!foundPixel) {
+                return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+            }
+
+            return { minX, minY, maxX, maxY };
+        }
+
+        // Helper function to draw a single creature onto the main canvas with its current properties
+        function drawCreature(creature, context, canvasWidth, canvasHeight) {
+            // 有効な描画がない場合は何もしない
+            if (!creature.displayObject || creature.width <= 0 || creature.height <= 0) {
+                return;
+            }
+
+            // 描画の中心座標を計算し、変換の基準とする
+            const centerX = creature.x + creature.width / 2;
+            const centerY = creature.y + creature.height / 2;
+
+            context.save(); // 現在のCanvasの状態を保存
+
+            // Canvasの原点を描画の中心に移動
+            context.translate(centerX, centerY);
+
+            // 回転を適用
+            context.rotate(creature.rotation);
+
+            // 拡大・縮小を適用
+            context.scale(creature.scale, creature.scale);
+
+            // 描画の種類に応じて異なるオブジェクトを描画
+            if (creature.type === 'drawing') {
+                context.drawImage(creature.displayObject, -creature.width / 2, -creature.height / 2);
+            } else if (creature.type === 'image') {
+                context.drawImage(creature.displayObject, -creature.width / 2, -creature.height / 2, creature.width, creature.height);
+            }
+
+            context.restore(); // Canvasの状態を復元し、変換を解除
+        }
+
+        // DOMContentLoadedイベントでスクリプトの実行を遅延させる
+        window.onload = function() {
+            const canvas = document.getElementById('drawingCanvas');
+            const ctx = canvas.getContext('2d');
+            const colorPicker = document.getElementById('colorPicker');
+            const clearButton = document.getElementById('clearButton');
+            const startButton = document.getElementById('startButton');
+            const stopButton = document.getElementById('stopButton');
+            const saveGifButton = document.getElementById('saveGifButton');
+            const loadImageButton = document.getElementById('loadImageButton'); // 新しいボタン
+            const imageInput = document.getElementById('imageInput'); // hiddenのinput要素
+
+            // オフスクリーン描画バッファの初期化
+            drawingBufferCanvas = document.createElement('canvas');
+            drawingBufferCtx = drawingBufferCanvas.getContext('2d');
+            drawingBufferCtx.lineWidth = 5;
+            drawingBufferCtx.lineCap = 'round';
+            drawingBufferCtx.lineJoin = 'round';
+
+            // キャンバスのサイズをウィンドウサイズに合わせて調整する関数
+            function resizeCanvas() {
+                const parentDiv = canvas.parentElement;
+                // 親要素の幅と高さを取得し、少しパディングを考慮する
+                const maxWidth = parentDiv.clientWidth * 0.95;
+                const maxHeight = parentDiv.clientHeight * 0.95;
+
+                const originalAspectRatio = 800 / 600; // 元のキャンバスの縦横比
+                let newWidth = maxWidth;
+                let newHeight = newWidth / originalAspectRatio;
+
+                // 親要素の高さに収まるように調整
+                if (newHeight > maxHeight) {
+                    newHeight = maxHeight;
+                    newWidth = newHeight * originalAspectRatio;
+                }
+
+                // 現在アニメーションが実行中であれば停止し、静止画として再描画
+                stopAnimation();
+
+                // キャンバスの寸法を更新
+                canvas.width = newWidth;
+                canvas.height = newHeight;
+
+                // 描画スタイルを再設定
+                ctx.lineWidth = 5;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+
+                // リサイズ後、保存されているオブジェクトを現在の静止状態に再描画する
+                ctx.clearRect(0, 0, canvas.width, canvas.height); // 新しい寸法でクリア
+                drawnObjects.forEach(obj => {
+                    drawCreature(obj, ctx, canvas.width, canvas.height);
+                });
+            }
+
+            // 初期リサイズとウィンドウリサイズイベントリスナー
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+
+            // 描画開始
+            function startDrawing(e) {
+                isDrawing = true;
+                // 描画中はアニメーションを停止する
+                stopAnimation();
+
+                // バッファキャンバスのサイズをメインキャンバスに合わせる
+                drawingBufferCanvas.width = canvas.width;
+                drawingBufferCanvas.height = canvas.height;
+                // 新しい描画のためにバッファキャンバスをクリア
+                drawingBufferCtx.clearRect(0, 0, drawingBufferCanvas.width, drawingBufferCanvas.height);
+                drawingBufferCtx.strokeStyle = colorPicker.value; // バッファの描画色を設定
+                drawingBufferCtx.lineWidth = 5; // バッファの描画線幅を設定
+
+                // マウス/タッチ座標の取得と相対座標への変換
+                const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
+                const clientY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
+                const rect = canvas.getBoundingClientRect();
+                const startX = clientX - rect.left;
+                const startY = clientY - rect.top;
+
+                // バッファキャンバスで新しいパスを開始
+                drawingBufferCtx.beginPath();
+                drawingBufferCtx.moveTo(startX, startY);
+
+                // メインキャンバスにも描画を開始（既存の絵の上に新しい線を引く）
+                ctx.beginPath();
+                ctx.strokeStyle = colorPicker.value; // メインキャンバスの描画色を設定
+                ctx.lineWidth = 5; // メインキャンバスの描画線幅を設定
+                ctx.moveTo(startX, startY);
+            }
+
+            // 描画中
+            function draw(e) {
+                if (!isDrawing) return;
+
+                // マウス/タッチ座標の取得と相対座標への変換
+                const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
+                const clientY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
+                const rect = canvas.getBoundingClientRect();
+                const x = clientX - rect.left;
+                const y = clientY - rect.top;
+
+                // バッファキャンバスに線を描画
+                drawingBufferCtx.lineTo(x, y);
+                drawingBufferCtx.stroke();
+
+                // メインキャンバスをクリアし、既存の絵と現在の描画を再描画
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                // 既存のオブジェクトを現在の静止状態（アニメーションが停止した状態）で描画
+                drawnObjects.forEach(obj => {
+                    drawCreature(obj, ctx, canvas.width, canvas.height);
+                });
+                // 現在描画中の内容をバッファからメインキャンバスに描画
+                ctx.drawImage(drawingBufferCanvas, 0, 0);
+            }
+
+            // 描画終了
+            function stopDrawing() {
+                // isDrawingがtrueの場合のみ処理を実行し、再入を防止
+                if (!isDrawing) return;
+                isDrawing = false;
+
+                drawingBufferCtx.closePath();
+                ctx.closePath(); // メインキャンバスのパスも閉じる
+
+                // バッファキャンバスから画像データを取得し、描かれた部分の境界ボックスを検出
+                const drawnImageData = drawingBufferCtx.getImageData(0, 0, drawingBufferCanvas.width, drawingBufferCanvas.height);
+                const { minX, minY, maxX, maxY } = getBoundingBox(drawnImageData);
+
+                // 有効な描画領域が見つかった場合（何も描かれていなければスキップ）
+                if (maxX - minX > 0 && maxY - minY > 0) {
+                    const creatureWidth = maxX - minX;
+                    const creatureHeight = maxY - minY;
+
+                    // この個別の生き物専用のオフスクリーンCanvasを作成
+                    const creatureCanvas = document.createElement('canvas');
+                    const creatureCtx = creatureCanvas.getContext('2d');
+                    creatureCanvas.width = creatureWidth;
+                    creatureCanvas.height = creatureHeight;
+
+                    // 描かれた部分のみを生き物のCanvasにコピー
+                    creatureCtx.putImageData(drawingBufferCtx.getImageData(minX, minY, creatureWidth, creatureHeight), 0, 0);
+
+                    // 新しい生き物オブジェクトを配列に追加
+                    drawnObjects.push({
+                        type: 'drawing', // タイプを 'drawing' に設定
+                        displayObject: creatureCanvas, // オフスクリーンCanvasを保持
+                        width: creatureWidth,
+                        height: creatureHeight,
+                        x: minX, // メインキャンバス上の初期位置（描画された場所）
+                        y: minY, // メインキャンバス上の初期位置（描画された場所）
+                        dx: (Math.random() < 0.5 ? 1 : -1) * (1.5 + Math.random() * 2.5), // 速度をランダムに設定
+                        dy: (Math.random() < 0.5 ? 1 : -1) * (1.5 + Math.random() * 2.5), // 速度をランダムに設定
+                        rotation: 0, // 初期回転角度
+                        rotationSpeed: (Math.random() < 0.5 ? 1 : -1) * (0.005 + Math.random() * 0.015), // 回転速度をランダムに設定
+                        scale: 1, // 初期拡大率
+                        scaleDirection: Math.random() < 0.5 ? 1 : -1, // 拡大・縮小の初期方向をランダムに設定
+                        scaleSpeed: 0.0005 + Math.random() * 0.001, // 拡大・縮小速度をランダムに設定
+                    });
+                }
+
+                // 描画終了後、メインキャンバスをクリアし、現在のすべてのオブジェクトを静止状態で再描画
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                drawnObjects.forEach(obj => {
+                    drawCreature(obj, ctx, canvas.width, canvas.height);
+                });
+            }
+
+            // イベントリスナーの追加（マウスとタッチの両方に対応）
+            canvas.addEventListener('mousedown', startDrawing);
+            canvas.addEventListener('mousemove', draw);
+            canvas.addEventListener('mouseup', stopDrawing);
+            canvas.addEventListener('mouseout', stopDrawing); // マウスがキャンバスから離れた場合
+
+            canvas.addEventListener('touchstart', startDrawing);
+            canvas.addEventListener('touchmove', draw);
+            canvas.addEventListener('touchend', stopDrawing);
+            canvas.addEventListener('touchcancel', stopDrawing);
+
+            // キャンバスをクリアする
+            clearButton.addEventListener('click', () => {
+                ctx.clearRect(0, 0, canvas.width, canvas.height); // メインキャンバス全体をクリア
+                drawnObjects = []; // 保存されたすべてのオブジェクトをクリア
+                stopAnimation(); // アニメーションを停止
+            });
+
+            // アニメーションを開始する
+            startButton.addEventListener('click', () => {
+                if (drawnObjects.length === 0) { // 描かれたオブジェクトがなければ開始しない
+                    displayMessageBox('Please draw something on the canvas or load an image to start the animation.');
+                    return;
+                }
+                // 既にアニメーションが実行中でなければ開始
+                if (!animationFrameId) {
+                    animate();
+                }
+            });
+
+            // アニメーションを停止する
+            stopButton.addEventListener('click', () => {
+                stopAnimation();
+            });
+
+            // GIF保存ボタンのイベントリスナー
+            saveGifButton.addEventListener('click', () => {
+                if (drawnObjects.length === 0) {
+                    displayMessageBox('Please draw something on the canvas or load an image to save as GIF.');
+                    return;
+                }
+
+                // 現在のアニメーションを停止し、GIFキャプチャのためにアニメーションを開始
+                stopAnimation();
+                animate(); // アニメーションを再開してフレームが描画されるようにする
+
+                // GIFエンコーダーを初期化
+                gif = new GIF({
+                    workers: 2, // 2つのWeb Workersを使用
+                    quality: 10, // 品質設定 (小さいほど高品質、大きいほどファイルサイズが小さくなる)
+                    repeat: 0, // 0で無限ループ
+                    background: '#ffffff', // キャンバスの背景色に合わせる
+                    width: canvas.width,
+                    height: canvas.height,
+                    transparent: '#00000000' // 透明な背景を設定 (必要であれば)
+                });
+
+                // GIF生成開始時のイベントリスナー
+                gif.on('start', function() {
+                    displayMessageBox('Generating GIF... Please wait.');
+                });
+
+                // GIF生成完了時のイベントリスナー
+                gif.on('finished', function(blob) {
+                    // メッセージボックスを非表示にする
+                    const messageBox = document.querySelector('.message-box-overlay');
+                    if (messageBox) {
+                        document.body.removeChild(messageBox);
+                    }
+
+                    // 生成されたGIFをダウンロード
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'drawing_animation.gif'; // ファイル名
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url); // オブジェクトURLを解放
+                });
+
+                isCapturingGif = true; // GIFキャプチャを開始するフラグを設定
+                capturedFrames = 0; // キャプチャされたフレーム数をリセット
+            });
+
+            // 画像読み込みボタンのイベントリスナー
+            loadImageButton.addEventListener('click', () => {
+                // hiddenのinput要素をクリックすることでファイル選択ダイアログを開く
+                imageInput.click();
+            });
+
+            // ファイル選択時のイベントリスナー
+            imageInput.addEventListener('change', (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                if (!file.type.startsWith('image/')) {
+                    displayMessageBox('Please select an image file.');
+                    return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        // 読み込んだ画像をアニメーションオブジェクトとして追加
+                        // 画像のサイズをキャンバスの大きさに合わせて調整する（例：最大幅の半分など）
+                        let imgWidth = img.width;
+                        let imgHeight = img.height;
+                        const maxImgSize = Math.min(canvas.width, canvas.height) / 2; // キャンバスの小さい方の半分のサイズを最大とする
+
+                        if (imgWidth > maxImgSize || imgHeight > maxImgSize) {
+                            if (imgWidth > imgHeight) {
+                                imgHeight = (imgHeight / imgWidth) * maxImgSize;
+                                imgWidth = maxImgSize;
+                            } else {
+                                imgWidth = (imgWidth / imgHeight) * maxImgSize;
+                                imgHeight = maxImgSize;
+                            }
+                        }
+
+                        // 初期位置をキャンバスの中心付近にランダムに配置
+                        const initialX = Math.random() * (canvas.width - imgWidth);
+                        const initialY = Math.random() * (canvas.height - imgHeight);
+
+                        drawnObjects.push({
+                            type: 'image', // タイプを 'image' に設定
+                            displayObject: img, // Imageオブジェクトを保持
+                            width: imgWidth,
+                            height: imgHeight,
+                            x: initialX,
+                            y: initialY,
+                            dx: (Math.random() < 0.5 ? 1 : -1) * (1.5 + Math.random() * 2.5),
+                            dy: (Math.random() < 0.5 ? 1 : -1) * (1.5 + Math.random() * 2.5),
+                            rotation: Math.random() * Math.PI * 2, // 初期回転角度をランダムに
+                            rotationSpeed: (Math.random() < 0.5 ? 1 : -1) * (0.005 + Math.random() * 0.015),
+                            scale: 1,
+                            scaleDirection: Math.random() < 0.5 ? 1 : -1,
+                            scaleSpeed: 0.0005 + Math.random() * 0.001,
+                        });
+
+                        // アニメーションを停止し、新しい画像を含めて再描画
+                        stopAnimation();
+                        ctx.clearRect(0, 0, canvas.width, canvas.height); // メインキャンバスをクリア
+                        drawnObjects.forEach(obj => {
+                            drawCreature(obj, ctx, canvas.width, canvas.height);
+                        });
+                    };
+                    img.onerror = () => {
+                        displayMessageBox('Failed to load image.');
+                    };
+                    img.src = e.target.result;
+                };
+                reader.onerror = () => {
+                    displayMessageBox('Failed to read file.');
+                };
+                reader.readAsDataURL(file);
+            });
+
+
+            // アニメーション停止関数
+            function stopAnimation() {
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId); // 現在のアニメーションフレームをキャンセル
+                    animationFrameId = null; // アニメーションフレームIDをリセット
+
+                    ctx.clearRect(0, 0, canvas.width, canvas.height); // キャンバスをクリア
+
+                    // アニメーション停止後、すべてのオブジェクトをその時点の最終状態（位置、回転、拡大率）で再描画する
+                    drawnObjects.forEach(obj => {
+                        drawCreature(obj, ctx, canvas.width, canvas.height);
+                    });
+                }
+            }
+
+            // メインのアニメーションループ
+            function animate() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height); // 新しいフレームのためにメインキャンバスをクリア
+
+                drawnObjects.forEach(creature => {
+                    // 微妙な「揺れ」効果を移動に加える
+                    const wiggleX = (Math.random() - 0.5) * wiggleAmount;
+                    const wiggleY = (Math.random() - 0.5) * wiggleAmount;
+
+                    // 次のフレームのために位置、回転、拡大率を更新 (GIFキャプチャ中でも更新)
+                    creature.x += creature.dx + wiggleX;
+                    creature.y += creature.dy + wiggleY;
+                    creature.rotation += creature.rotationSpeed;
+                    creature.scale += creature.scaleSpeed * creature.scaleDirection;
+
+                    // 拡大率が最小値または最大値を超えたら方向を反転させる
+                    if (creature.scale > maxScale || creature.scale < minScale) {
+                        creature.scaleDirection *= -1;
+                        // 拡大率が範囲内に収まるように調整
+                        creature.scale = Math.max(minScale, Math.min(maxScale, creature.scale));
+                    }
+
+                    // Canvasの境界との衝突検出（簡易的な衝突判定：描画の最大寸法を半径とする円として扱う）
+                    const effectiveWidth = creature.width * creature.scale;
+                    const effectiveHeight = creature.height * creature.scale;
+                    const effectiveRadius = Math.max(effectiveWidth, effectiveHeight) / 2; // 最大寸法を半径とする
+
+                    const creatureCurrentCenterX = creature.x + creature.width / 2;
+                    const creatureCurrentCenterY = creature.y + creature.height / 2;
+
+                    // 水平方向の境界チェック
+                    if (creatureCurrentCenterX + effectiveRadius > canvas.width || creatureCurrentCenterX - effectiveRadius < 0) {
+                        creature.dx *= -1; // 水平方向の速度を反転
+                        // 壁にめり込むのを防ぐため、位置を調整
+                        if (creatureCurrentCenterX + effectiveRadius > canvas.width) {
+                            creature.x = canvas.width - effectiveRadius - creature.width / 2; // 右端に衝突した場合
+                        } else {
+                            creature.x = effectiveRadius - creature.width / 2;                 // 左端に衝突した場合
+                        }
+                    }
+                    // 垂直方向の境界チェック
+                    if (creatureCurrentCenterY + effectiveRadius > canvas.height || creatureCurrentCenterY - effectiveRadius < 0) {
+                        creature.dy *= -1; // 垂直方向の速度を反転
+                        // 壁にめり込むのを防ぐため、位置を調整
+                        if (creatureCurrentCenterY + effectiveRadius > canvas.height) {
+                            creature.y = canvas.height - effectiveRadius - creature.height / 2; // 下端に衝突した場合
+                        } else {
+                            creature.y = effectiveRadius - creature.height / 2;                  // 上端に衝突した場合
+                        }
+                    }
+
+                    // 更新されたプロパティでクリーチャーを描画
+                    drawCreature(creature, ctx, canvas.width, canvas.height);
+                });
+
+                // GIFキャプチャロジック
+                if (isCapturingGif) {
+                    if (capturedFrames < MAX_GIF_FRAMES) {
+                        // メインキャンバスの現在の状態をGIFにフレームとして追加
+                        gif.addFrame(canvas, { delay: GIF_FRAME_DELAY, copy: true });
+                        capturedFrames++;
+                    } else {
+                        isCapturingGif = false; // キャプチャ終了
+                        gif.render(); // GIFのレンダリングを開始
+                    }
+                }
+
+                animationFrameId = requestAnimationFrame(animate); // 次のアニメーションフレームを要求
+            }
+
+            // メッセージボックスを表示する関数 (alertの代替)
+            function displayMessageBox(message) {
+                const messageBox = document.createElement('div');
+                // ユニークなクラス名を追加して、GIF生成中のメッセージボックスを識別できるようにする
+                messageBox.className = 'fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 message-box-overlay';
+                messageBox.innerHTML = `
+                    <div class="bg-white p-6 rounded-lg shadow-xl text-center max-w-sm mx-auto">
+                        <p class="text-lg font-semibold text-gray-800 mb-4">${message}</p>
+                        ${message.includes('Generating GIF') ? '' : '<button id="closeMessageBox" class="btn btn-primary">Close</button>'}
+                    </div>
+                `;
+                document.body.appendChild(messageBox);
+
+                // 閉じるボタンがある場合のみイベントリスナーを追加
+                const closeButton = document.getElementById('closeMessageBox');
+                if (closeButton) {
+                    closeButton.addEventListener('click', () => {
+                        document.body.removeChild(messageBox);
+                    });
+                }
+            }
+        };
+    </script>
+</body>
+</html>
